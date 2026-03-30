@@ -37,7 +37,9 @@ type Server struct {
 	Handler     Handler  // handler to invoke, ssh.DefaultHandler if nil
 	HostSigners []Signer // private keys for the host key, must have at least one
 	Version     string   // server version to be sent before the initial handshake
+	Banner      string   // server banner
 
+	BannerHandler                 BannerHandler                 // server banner handler, overrides Banner
 	KeyboardInteractiveHandler    KeyboardInteractiveHandler    // keyboard-interactive authentication handler
 	PasswordHandler               PasswordHandler               // password authentication handler
 	PublicKeyHandler              PublicKeyHandler              // public key authentication handler
@@ -47,6 +49,8 @@ type Server struct {
 	ReversePortForwardingCallback ReversePortForwardingCallback // callback for allowing reverse port forwarding, denies all if nil
 	ServerConfigCallback          ServerConfigCallback          // callback for configuring detailed SSH options
 	SessionRequestCallback        SessionRequestCallback        // callback for allowing or denying SSH sessions
+
+	ConnectionFailedCallback ConnectionFailedCallback // callback to report connection failures
 
 	IdleTimeout time.Duration // connection timeout when no activity, none if empty
 	MaxTimeout  time.Duration // absolute connection timeout, none if empty
@@ -129,6 +133,17 @@ func (srv *Server) config(ctx Context) *gossh.ServerConfig {
 	}
 	if srv.Version != "" {
 		config.ServerVersion = "SSH-2.0-" + srv.Version
+	}
+	if srv.Banner != "" {
+		config.BannerCallback = func(_ gossh.ConnMetadata) string {
+			return srv.Banner
+		}
+	}
+	if srv.BannerHandler != nil {
+		config.BannerCallback = func(conn gossh.ConnMetadata) string {
+			applyConnMetadata(ctx, conn)
+			return srv.BannerHandler(ctx)
+		}
 	}
 	if srv.PasswordHandler != nil {
 		config.PasswordCallback = func(conn gossh.ConnMetadata, password []byte) (*gossh.Permissions, error) {
@@ -278,7 +293,9 @@ func (srv *Server) HandleConn(newConn net.Conn) {
 	defer conn.Close()
 	sshConn, chans, reqs, err := gossh.NewServerConn(conn, srv.config(ctx))
 	if err != nil {
-		// TODO: trigger event callback
+		if srv.ConnectionFailedCallback != nil {
+			srv.ConnectionFailedCallback(conn, err)
+		}
 		return
 	}
 
